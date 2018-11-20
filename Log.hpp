@@ -8,14 +8,16 @@
 #define INFO	0
 #define DEBUG	1
 #define WARNING	2
-#define ERROE	3
+#define ERROR	3
 
 uint64_t GetTimeStamp()
 {
-
+	struct timeval tv_;
+	gettimeofday(&tv_, NULL);
+	return tv_.tv_sec;
 }
 
-void GetLogLevel(int level_)
+std::string GetLogLevel(int level_)
 {
 	switch (level_)
 	{
@@ -32,11 +34,12 @@ void GetLogLevel(int level_)
 	}
 }
 
-void Log(int level_, std::string::message_, std::string file_, int line_)
+void Log(int level_, std::string message_, std::string file_, int line_)
 {
-	std::cout << " [ " << GetLogLevel_ << " ][ " << file_ << " : " << line_ << " ] " << message_ <<  << std::endl;
+	uint64_t time = GetTimeStamp();
+	std::cout << file_ << ":" << line_ << ": " << GetLogLevel(level_) << ": " << message_ << std::endl;
 }
 
-#define LOG(level_, message_) Log(level_, message, __FILE__, __LINE__)
+#define LOG(level_, message_) Log(level_, message_, __FILE__, __LINE__)
 
 #endif
