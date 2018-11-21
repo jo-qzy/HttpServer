@@ -1,8 +1,8 @@
-bin=HttpdServer
+bin=HttpServer
 cc=g++
 LDFLAGS=-lpthread
 
-HttpdServer:HttpdServer.cc
+HttpServer:HttpServer.cc
 	$(cc) -o $@ $^ $(LDFLAGS)
 
 .PHONY:clean

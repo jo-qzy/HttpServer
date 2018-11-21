@@ -2,8 +2,13 @@
 #define __PROTOCOL_UTIL_HPP__
 
 #include <iostream>
-#include <sstream>
+#include <string>
 #include <stdlib.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <sstream>
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
