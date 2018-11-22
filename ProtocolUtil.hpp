@@ -9,23 +9,34 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <sstream>
+#include <unordered_map>
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
 #include "Log.hpp"
 
-#define ROOT_PATH "webroot"
+#define ROOT_PATH "wwwroot"
 #define DEFAULT_PAGE "index.html"
 
 #define OK 200
 #define NOT_FOUND 404
+
+class StringUtil
+{
+	public:
+		static int StrToInt(std::string& str_)
+		{}
+
+		static std::string IntToStr(int num_)
+		{}
+};
 
 class Request
 {
 	public:
 		// 首行、协议头、空行、正文
 		std::string req_line;
-		std::string req_head;
+		std::string req_header;
 		std::string blank;
 		std::string req_text;
 	private:
@@ -37,10 +48,12 @@ class Request
 		// method: POST->false, GET->true(?)
 		bool cgi;
 
-		// 资源路径
+		// 资源路径、参数
 		std::string path;
-		// GET方法的参数
 		std::string param;
+
+		// 协议头键值对
+		std::unordered_map<std::string, std:::string> header_kv;
 	public:
 		Request()
 			: blank("\n")
@@ -73,13 +86,44 @@ class Request
 			}
 		}
 
-		bool IsLegalRequest()
+		bool IsRequestLegal()
 		{
-			if (strcasecmp(method.c_str(), "POST") == 0 || strcasecmp(method.c_str(), "GET") == 0)
+			if (strcasecmp(method.c_str(), "POST") == 0 || cgi = (strcasecmp(method.c_str(), "GET") == 0))
 			{
 				return true;
 			}
 			return false;
+		}
+
+		bool IsPathLegal()
+		{
+			struct stat st;
+			if (stat(path.c_str(), &st) != -1)
+			{
+				if ()
+				if (S_ISDIR(st))
+				{
+					path += "/";
+					path += DEFAULT_PAGE;
+				}
+			}
+		}
+
+		void GetHeaderKV()
+		{
+			std::string tmp_;
+			int start_ = 0, pos_ = 0;
+			while (std::string::npos == start_)
+			{
+				// 取出键值对
+				pos_ = req_header.find('\n', start);
+				tmp_ = req_header.substr(start_, pos_ - start_);
+				start_ = pos_ + 1;
+
+				// 分割键值对存储为key-value方式
+				pos_ = tmp_.find(": ");
+				header_kv.insert(makepair(tmp_.substr(0, pos_), tmp_.substr(pos_ + 2)));
+			}
 		}
 };
 
@@ -87,14 +131,14 @@ class Response
 {
 	private:
 		std::string rsp_line;
-		std::string rsp_head;
+		std::string rsp_header;
 		std::string blank;
 		std::string rsp_text;
 	public:
 		int code;
 	public:
 		Response()
-			: blank("\r\n")
+			: blank("\n")
 			, code(OK)
 		{}
 };
@@ -108,7 +152,7 @@ class ClientConnect
 			: sock(client_sock_)
 		{}
 
-		size_t RecvOneLine(std::string req_line_)
+		size_t RecvOneLine(std::string& str_)
 		{
 			ssize_t recv_len_ = 0;
 			char ch_ = 0;
@@ -137,10 +181,30 @@ class ClientConnect
 							ch_ = '\n';
 						}
 					}
-					req_line_.push_back(ch_);
+					str_.push_back(ch_);
 				}
 			}
-			return req_line_.size();
+			return str_.size();
+		}
+
+		void GetHeader(std::string& header_)
+		{
+			// 获取header
+			std::string tmp_;
+			while (tmp_ != "\n")
+			{
+				tmp_.clear();
+				RecvOneLine(tmp);
+				if (tmp_ != "\n")
+				{
+					header_ += tmp_;
+				}
+			}
+			// 读取协议头最后一行情况
+			// key: value\r\n
+			// \r\n\r\n
+			// 空行有两个\r\n，只读取了一个，所以要把另一个也读了
+			RecvOneLine(tmp_);
 		}
 
 		~ClientConnect()
@@ -168,7 +232,7 @@ class ConnectHandler
 			// 首行解析
 			req_->RequestLineParse();
 
-			if (req_->IsLegalRequest())
+			if (req_->IsRequestLegal())
 			{
 				// uri解析
 				req_->UriParse();
@@ -177,8 +241,13 @@ class ConnectHandler
 			{
 				// 请求方法错误
 				rsp_->code = NOT_FOUND;
+				goto end;
 			}
 
+			// 先获取协议头，分割键值对
+			client_->GetHeader(req_->req_header);
+			req_->GetHeaderKV();
+end:
 			delete client_;
 			delete req_;
 			delete rsp_;
