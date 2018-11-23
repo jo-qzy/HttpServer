@@ -6,6 +6,8 @@
 #include <stdlib.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <sstream>
@@ -21,24 +23,48 @@
 #define OK 200
 #define NOT_FOUND 404
 
+#define HTTP_VERSION "http/1.0"
+
 class StringUtil
 {
 	public:
-		static int StrToInt(std::string& str_)
-		{}
+		static int StringToInt(std::string& str_)
+		{
+			std::stringstream ss(str_);
+			int ret_ = 0;
+			ss >> ret_;
+			return ret_;
+		}
 
-		static std::string IntToStr(int num_)
-		{}
+		static std::string IntToString(int num_)
+		{
+			std::stringstream ss;
+			ss << num_;
+			return ss.str();
+		}
+
+		static std::string CodeToDescribe(int code_)
+		{
+			switch(code_)
+			{
+				case 200:
+					return "OK";
+				case 404:
+					return "NOT FOUND";
+				default:
+					return "NOT FOUND";
+			}
+		}
 };
 
 class Request
 {
 	public:
 		// 首行、协议头、空行、正文
-		std::string req_line;
-		std::string req_header;
+		std::string line;
+		std::string header;
 		std::string blank;
-		std::string req_text;
+		std::string text;
 	private:
 		// 请求方法、资源标识符、版本号
 		std::string method;
@@ -52,18 +78,22 @@ class Request
 		std::string path;
 		std::string param;
 
+		int resourse_size;
+		int content_length;
+
 		// 协议头键值对
-		std::unordered_map<std::string, std:::string> header_kv;
+		std::unordered_map<std::string, std::string> header_kv;
 	public:
 		Request()
 			: blank("\n")
 			, cgi(false)
 			, path(ROOT_PATH)
+			, resourse_size(0)
 		{}
 
 		void RequestLineParse()
 		{
-			std::stringstream ss_(req_line);
+			std::stringstream ss_(line);
 			ss_ >> method >> uri >> version;
 		}
 
@@ -86,9 +116,10 @@ class Request
 			}
 		}
 
-		bool IsRequestLegal()
+		bool IsMethodLegal()
 		{
-			if (strcasecmp(method.c_str(), "POST") == 0 || cgi = (strcasecmp(method.c_str(), "GET") == 0))
+			cgi = strcasecmp(method.c_str(), "GET");
+			if (strcasecmp(method.c_str(), "POST") == 0 || cgi)
 			{
 				return true;
 			}
@@ -98,42 +129,96 @@ class Request
 		bool IsPathLegal()
 		{
 			struct stat st;
-			if (stat(path.c_str(), &st) != -1)
+			if (stat(path.c_str(), &st) < 0)
 			{
-				if ()
-				if (S_ISDIR(st))
-				{
-					path += "/";
-					path += DEFAULT_PAGE;
-				}
+				LOG(WARNING, "path not found!");
+				return false;
 			}
+			if (S_ISDIR(st.st_mode))
+			{
+				path += "/";
+				path += DEFAULT_PAGE;
+				stat(path.c_str(), &st);
+			}
+			if ((st.st_mode & S_IXUSR) || (st.st_mode & S_IXGRP) || (st.st_mode & S_IXOTH))
+			{
+				cgi = true;
+			}
+			resourse_size = st.st_size;
 		}
 
-		void GetHeaderKV()
+		void HeaderParse()
 		{
 			std::string tmp_;
-			int start_ = 0, pos_ = 0;
-			while (std::string::npos == start_)
+			size_t start_ = 0, pos_ = 0;
+			while (start_ < header.size())
 			{
 				// 取出键值对
-				pos_ = req_header.find('\n', start);
-				tmp_ = req_header.substr(start_, pos_ - start_);
+				pos_ = header.find('\n', start_);
+				if (pos_ == std::string::npos)
+				{
+					break;
+				}
+				tmp_ = header.substr(start_, pos_ - start_);
 				start_ = pos_ + 1;
 
 				// 分割键值对存储为key-value方式
 				pos_ = tmp_.find(": ");
-				header_kv.insert(makepair(tmp_.substr(0, pos_), tmp_.substr(pos_ + 2)));
+				if (pos_ == std::string::npos)
+				{
+					continue;
+				}
+				header_kv.insert(std::make_pair(tmp_.substr(0, pos_), tmp_.substr(pos_ + 2)));
 			}
+		}
+
+		bool IsTextExist()
+		{
+			if (strcasecmp(method.c_str(), "POST") == 0)
+			{
+				return true;
+			}
+			return false;
+		}
+
+		int GetContentLength()
+		{
+			std::string tmp_ = header_kv["Content-Length"];
+			if (tmp_ == "")
+			{
+				return 0;
+			}
+			else
+			{
+				content_length = StringUtil::StringToInt(tmp_);
+			}
+			return content_length;
+		}
+
+		void GetParam()
+		{
+			// 有没有可能url有一部分参数，正文还有参数？
+			param += text;
+		}
+
+		bool IsCgi()
+		{
+			return cgi;
+		}
+
+		int GetResourseSize()
+		{
+			return resourse_size;
 		}
 };
 
 class Response
 {
 	private:
-		std::string rsp_line;
-		std::string rsp_header;
+		std::string line;
+		std::string header;
 		std::string blank;
-		std::string rsp_text;
+		std::string text;
 	public:
 		int code;
 	public:
@@ -141,6 +226,23 @@ class Response
 			: blank("\n")
 			, code(OK)
 		{}
+
+		void MakeStatusLine()
+		{
+			line = HTTP_VERSION;
+			line += " ";
+			line += StringUtil::IntToString(code);
+			line += " ";
+			line += StringUtil::CodeToDescribe(code);
+		}
+
+		void MakeHeader(Request*& req_)
+		{
+			header = "Content-Length: ";
+			header += StringUtil::IntToString(req_->GetResourseSize());
+			header += "\n";
+			header += "Content-Type: text/html\n";
+		}
 };
 
 class ClientConnect
@@ -194,7 +296,7 @@ class ClientConnect
 			while (tmp_ != "\n")
 			{
 				tmp_.clear();
-				RecvOneLine(tmp);
+				RecvOneLine(tmp_);
 				if (tmp_ != "\n")
 				{
 					header_ += tmp_;
@@ -205,6 +307,30 @@ class ClientConnect
 			// \r\n\r\n
 			// 空行有两个\r\n，只读取了一个，所以要把另一个也读了
 			RecvOneLine(tmp_);
+		}
+
+		void RecvText(std::string& text_, int content_lenth_)
+		{
+			char ch_ = 0;
+			int recv_length_ = 0;
+			int ret_ = 0;
+			while (recv_length_ < 0)
+			{
+				ret_ = recv(sock, &ch_, 1, 0);
+				if (ret_ <= 0)
+				{
+					if (errno == EINTR)
+					{
+						continue;
+					}
+					else
+					{
+						return;
+					}
+				}
+				text_ += ch_;
+				recv_length_++;
+			}
 		}
 
 		~ClientConnect()
@@ -227,31 +353,65 @@ class ConnectHandler
 			Request* req_ = new Request;
 			Response* rsp_ = new Response;
 
-			// 读取首行
-			client_->RecvOneLine(req_->req_line);
-			// 首行解析
+			// 读取首行并解析
+			client_->RecvOneLine(req_->line);
 			req_->RequestLineParse();
 
-			if (req_->IsRequestLegal())
-			{
-				// uri解析
-				req_->UriParse();
-			}
-			else
+			// 请求方法是否合法
+			if (!req_->IsMethodLegal())
 			{
 				// 请求方法错误
 				rsp_->code = NOT_FOUND;
 				goto end;
 			}
+			// uri合法，开始解析
+			req_->UriParse();
 
-			// 先获取协议头，分割键值对
-			client_->GetHeader(req_->req_header);
-			req_->GetHeaderKV();
+			// 路径是否合法
+			if (!req_->IsPathLegal())
+			{
+				rsp_->code = NOT_FOUND;
+				goto end;
+			}
+
+			// 首行分析完毕，获取协议头，分割键值对
+			client_->GetHeader(req_->header);
+			req_->HeaderParse();
+
+			// 分析是否需要读取正文
+			if (req_->IsTextExist())
+			{
+				client_->RecvText(req_->text, req_->GetContentLength());
+				req_->GetParam();
+			}
+
+			ProcessResponse(client_, req_, rsp_);
 end:
 			delete client_;
 			delete req_;
 			delete rsp_;
 		}
+		
+		static int ProcessCgi(ClientConnect*& client_, Request*& req_, Response*& rsp_)
+		{
+			rsp_->MakeStatusLine();
+			rsp_->MakeHeader(req_);
+		}
+
+		static int ProcessResponse(ClientConnect*& client_, Request*& req_, Response*& rsp_)
+		{
+			// 判定cgi方法
+			if (req_->IsCgi())
+			{
+				ProcessCgi(client_, req_, rsp_);
+			}
+			else
+			{
+				//ProcessNonCgi();
+			}
+			return 1;
+		}
+
 };
 
 #endif
