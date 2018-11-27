@@ -7,6 +7,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <sys/types.h>
+#include <sys/sendfile.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -27,6 +28,8 @@
 
 class StringUtil
 {
+	public:
+		static std::unordered_map<std::string, std::string> content_type;
 	public:
 		static int StringToInt(std::string& str_)
 		{
@@ -55,6 +58,20 @@ class StringUtil
 					return "NOT FOUND";
 			}
 		}
+
+		static std::string GetContentType(std::string path_)
+		{
+			std::string file_suffix_ = path_.substr(path_.rfind('.'));
+			return content_type[file_suffix_];
+		}
+};
+
+std::unordered_map<std::string, std::string> StringUtil::content_type = {
+	{".html", "text/html"},
+	{".htm", "text/html"},
+	{".js", "application/x-javascript"},
+	{".css", "text/css"},
+	{".jpg", "application/x-jpg"}
 };
 
 class Request
@@ -78,7 +95,7 @@ class Request
 		std::string path;
 		std::string param;
 
-		int resourse_size;
+		int resource_size;
 		int content_length;
 
 		// 协议头键值对
@@ -88,7 +105,7 @@ class Request
 			: blank("\n")
 			, cgi(false)
 			, path(ROOT_PATH)
-			, resourse_size(0)
+			, resource_size(0)
 		{}
 
 		void RequestLineParse()
@@ -118,8 +135,7 @@ class Request
 
 		bool IsMethodLegal()
 		{
-			cgi = strcasecmp(method.c_str(), "GET");
-			if (strcasecmp(method.c_str(), "POST") == 0 || cgi)
+			if (strcasecmp(method.c_str(), "GET") == 0 || (cgi = (strcasecmp(method.c_str(), "POST") == 0)))
 			{
 				return true;
 			}
@@ -144,7 +160,8 @@ class Request
 			{
 				cgi = true;
 			}
-			resourse_size = st.st_size;
+			resource_size = st.st_size;
+			return true;
 		}
 
 		void HeaderParse()
@@ -206,15 +223,20 @@ class Request
 			return cgi;
 		}
 
-		int GetResourseSize()
+		int GetResourceSize()
 		{
-			return resourse_size;
+			return resource_size;
+		}
+
+		std::string& GetPath()
+		{
+			return path;
 		}
 };
 
 class Response
 {
-	private:
+	public:
 		std::string line;
 		std::string header;
 		std::string blank;
@@ -234,14 +256,17 @@ class Response
 			line += StringUtil::IntToString(code);
 			line += " ";
 			line += StringUtil::CodeToDescribe(code);
+			line += "\n";
 		}
 
 		void MakeHeader(Request*& req_)
 		{
 			header = "Content-Length: ";
-			header += StringUtil::IntToString(req_->GetResourseSize());
+			header += StringUtil::IntToString(req_->GetResourceSize());
 			header += "\n";
-			header += "Content-Type: text/html\n";
+			header += "Content-Type: ";
+			header += StringUtil::GetContentType(req_->GetPath());
+			header += "\n";
 		}
 };
 
@@ -249,6 +274,7 @@ class ClientConnect
 {
 	private:
 		int sock;
+		int fd;
 	public:
 		ClientConnect(int client_sock_)
 			: sock(client_sock_)
@@ -306,7 +332,7 @@ class ClientConnect
 			// key: value\r\n
 			// \r\n\r\n
 			// 空行有两个\r\n，只读取了一个，所以要把另一个也读了
-			RecvOneLine(tmp_);
+			//RecvOneLine(tmp_);
 		}
 
 		void RecvText(std::string& text_, int content_lenth_)
@@ -314,7 +340,7 @@ class ClientConnect
 			char ch_ = 0;
 			int recv_length_ = 0;
 			int ret_ = 0;
-			while (recv_length_ < 0)
+			while (recv_length_ < content_length_)
 			{
 				ret_ = recv(sock, &ch_, 1, 0);
 				if (ret_ <= 0)
@@ -333,11 +359,24 @@ class ClientConnect
 			}
 		}
 
+		void SendResponse(Request*& req_, Response*& rsp_)
+		{
+			send(sock, rsp_->line.c_str(), rsp_->line.size(), 0);
+			send(sock, rsp_->header.c_str(), rsp_->header.size(), 0);
+			send(sock, rsp_->blank.c_str(), rsp_->blank.size(), 0);
+			fd = open(req_->GetPath().c_str(), O_RDONLY);
+			sendfile(sock, fd, nullptr, req_->GetResourceSize());
+		}
+
 		~ClientConnect()
 		{
 			if (sock > 0)
 			{
 				close(sock);
+			}
+			if (fd > 0)
+			{
+				close(fd);
 			}
 		}
 };
@@ -348,7 +387,7 @@ class ConnectHandler
 		// 处理连接请求
 		static void* HandleConnect(void* sock_)
 		{
-			int client_sock_ = *(int*)sock_;
+			int client_sock_ = *((int*)sock_);
 			ClientConnect* client_ = new ClientConnect(client_sock_);
 			Request* req_ = new Request;
 			Response* rsp_ = new Response;
@@ -364,12 +403,14 @@ class ConnectHandler
 				rsp_->code = NOT_FOUND;
 				goto end;
 			}
+
 			// uri合法，开始解析
 			req_->UriParse();
 
 			// 路径是否合法
 			if (!req_->IsPathLegal())
 			{
+				LOG(ERROR, "path not exist");
 				rsp_->code = NOT_FOUND;
 				goto end;
 			}
@@ -387,31 +428,36 @@ class ConnectHandler
 
 			ProcessResponse(client_, req_, rsp_);
 end:
+			if (rsp_->code != OK)
+			{
+
+			}
 			delete client_;
 			delete req_;
 			delete rsp_;
-		}
-		
-		static int ProcessCgi(ClientConnect*& client_, Request*& req_, Response*& rsp_)
-		{
-			rsp_->MakeStatusLine();
-			rsp_->MakeHeader(req_);
+			delete (int*)sock_;
 		}
 
-		static int ProcessResponse(ClientConnect*& client_, Request*& req_, Response*& rsp_)
+		static void ProcessResponse(ClientConnect*& client_, Request*& req_, Response*& rsp_)
 		{
 			// 判定cgi方法
 			if (req_->IsCgi())
 			{
-				ProcessCgi(client_, req_, rsp_);
+				//ProcessCgi(client_, req_, rsp_);
 			}
 			else
 			{
-				//ProcessNonCgi();
+				ProcessNonCgi(client_, req_, rsp_);
 			}
-			return 1;
 		}
 
+		static int ProcessNonCgi(ClientConnect*& client_, Request*& req_, Response*& rsp_)
+		{
+			rsp_->MakeStatusLine();
+			rsp_->MakeHeader(req_);
+			// 不需要先将text读取出来，可以直接用sendfile发送
+			client_->SendResponse(req_, rsp_);
+		}
 };
 
 #endif

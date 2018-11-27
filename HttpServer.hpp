@@ -61,9 +61,10 @@ class HttpServer
 				}
 
 				LOG(INFO, "accept new link from far-end, create thread handle link...");
-				SetNonblock(client_sock_);
+				//SetNonblock(client_sock_);
+				int* new_sock_ = new int(client_sock_);
 				pthread_t tid_ = 0;
-				pthread_create(&tid_, NULL, ConnectHandler::HandleConnect, (void*)&client_sock_);
+				pthread_create(&tid_, NULL, ConnectHandler::HandleConnect, (void*)new_sock_);
 			}
 		}
 
