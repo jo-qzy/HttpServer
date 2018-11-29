@@ -1,54 +1,108 @@
-#ifndef __PROTOCOL_UTIL_HPP__
-#define __PROTOCOL_UTIL_HPP__
+#ifndef __PROTOCOL_UTIL_H__
+#define __PROTOCOL_UTIL_H__
 
 #include <iostream>
 #include <string>
-#include <stdlib.h>
-#include <sys/socket.h>
-#include <arpa/inet.h>
-#include <sys/types.h>
-#include <sys/sendfile.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <pthread.h>
 #include <sstream>
 #include <unordered_map>
 #include <string.h>
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/sendfile.h>
+#include <sys/wait.h>
 #include <unistd.h>
+#include <pthread.h>
 #include <errno.h>
+#include <stdlib.h>
 #include "Log.hpp"
 
-#define ROOT_PATH "wwwroot"
-#define DEFAULT_PAGE "index.html"
+#define VERSION "HTTP/1.0"
 
-#define OK 200
-#define NOT_FOUND 404
+#define DEFAULT_PAGE	"index.html"
+#define ROOT			"wwwroot"
+#define PAGE_NOT_FOUND	"wwwroot/404/index.html"
 
-#define HTTP_VERSION "http/1.0"
+#define OK			200
+#define NOT_FOUND	404
 
-class StringUtil
+class ProtocolUtil
 {
 	public:
-		static std::unordered_map<std::string, std::string> content_type;
-	public:
-		static int StringToInt(std::string& str_)
+		static std::unordered_map<std::string, bool> _method;
+		static std::unordered_map<std::string, std::string> _content_type;
+
+		static bool MethodCheck(std::string& method)
 		{
-			std::stringstream ss(str_);
-			int ret_ = 0;
-			ss >> ret_;
-			return ret_;
+			return _method[method];
 		}
 
-		static std::string IntToString(int num_)
+		static int RecvOneLine(int sock, std::string& str)
+		{
+			char ch = 0;
+			ssize_t recv_len = 0;
+			while (ch != '\n')
+			{
+				recv_len = recv(sock, &ch, 1, 0);
+				if (recv_len <= 0)
+				{
+					if (recv == 0 && errno == EINTR)
+					{
+						continue;
+					}
+					return -1;
+				}
+				else
+				{
+					if (ch == '\r')
+					{
+						recv(sock, &ch, 1, MSG_PEEK);
+						if (ch == '\n')
+						{
+							recv(sock, &ch, 1, 0);
+						}
+						else
+						{
+							ch = '\n';
+						}
+					}
+					str.push_back(ch);
+				}
+			}
+			return (int)str.size();
+		}
+
+		static int StrToInt(std::string& str)
+		{
+			int ret = 0;
+			std::stringstream ss(str);
+			ss >> ret;
+			return ret;
+		}
+
+		static std::string IntToStr(int num)
 		{
 			std::stringstream ss;
-			ss << num_;
+			ss << num;
 			return ss.str();
 		}
 
-		static std::string CodeToDescribe(int code_)
+		static std::string GetContentType(std::string path)
 		{
-			switch(code_)
+			size_t pos = path.rfind('.');
+			if (pos == std::string::npos)
+			{
+				return "";
+			}
+			std::string file_suffix = path.substr(pos);
+			return _content_type[file_suffix];
+		}
+
+		static std::string CodeToDesc(int code)
+		{
+			switch (code)
 			{
 				case 200:
 					return "OK";
@@ -58,325 +112,373 @@ class StringUtil
 					return "NOT FOUND";
 			}
 		}
-
-		static std::string GetContentType(std::string path_)
-		{
-			std::string file_suffix_ = path_.substr(path_.rfind('.'));
-			return content_type[file_suffix_];
-		}
 };
 
-std::unordered_map<std::string, std::string> StringUtil::content_type = {
+std::unordered_map<std::string, bool> ProtocolUtil::_method = {
+	{"POST", true},
+	{"GET", true}
+};
+
+std::unordered_map<std::string, std::string> ProtocolUtil::_content_type = {
 	{".html", "text/html"},
 	{".htm", "text/html"},
 	{".js", "application/x-javascript"},
 	{".css", "text/css"},
-	{".jpg", "application/x-jpg"}
+	{".jpg", "application/x-jpg"},
+	{".jpeg", "image/jpeg"}
 };
 
 class Request
 {
-	public:
-		// 首行、协议头、空行、正文
-		std::string line;
-		std::string header;
-		std::string blank;
-		std::string text;
 	private:
-		// 请求方法、资源标识符、版本号
-		std::string method;
-		std::string uri;
-		std::string version;
+		int _sock;
+		
+		std::string _line;
+		std::string _header;
+		std::string _text;
 
-		// method: POST->false, GET->true(?)
-		bool cgi;
+		std::string _method;
+		std::string _uri;
+		std::string _version;
+		std::string _path;
+		std::string _param;
 
-		// 资源路径、参数
-		std::string path;
-		std::string param;
-
-		int resource_size;
-		int content_length;
-
-		// 协议头键值对
-		std::unordered_map<std::string, std::string> header_kv;
+		bool _cgi;
+		int _resource_size;
+		int _content_length;
+		std::unordered_map<std::string, std::string> _header_kv;
 	public:
-		Request()
-			: blank("\n")
-			, cgi(false)
-			, path(ROOT_PATH)
-			, resource_size(0)
+		Request(int client_sock)
+			: _sock(client_sock)
+			, _path(ROOT)
+			, _cgi(false)
 		{}
 
-		void RequestLineParse()
+		bool LineParse()
 		{
-			std::stringstream ss_(line);
-			ss_ >> method >> uri >> version;
-		}
-
-		void UriParse()
-		{
-			size_t pos_ = uri.find('?');
-			if (pos_ != std::string::npos)
+			// 1. get line and divide line
+			if (!GetLine())
 			{
-				cgi = true;
-				path = uri.substr(0, pos_ - 1);
-				param = uri.substr(pos_ + 1);
-			}
-			else
-			{
-				path += uri;
-			}
-			if (path[path.size() - 1] == '/')
-			{
-				path += DEFAULT_PAGE;
-			}
-		}
-
-		bool IsMethodLegal()
-		{
-			if (strcasecmp(method.c_str(), "GET") == 0 || (cgi = (strcasecmp(method.c_str(), "POST") == 0)))
-			{
-				return true;
-			}
-			return false;
-		}
-
-		bool IsPathLegal()
-		{
-			struct stat st;
-			if (stat(path.c_str(), &st) < 0)
-			{
-				LOG(WARNING, "path not found!");
 				return false;
 			}
-			if (S_ISDIR(st.st_mode))
+			std::cout << _line << std::endl;
+
+			// 2. check method is legal or not
+			//	  if method is "POST" ---> cgi = true
+			if (!CheckMethod())
 			{
-				path += "/";
-				path += DEFAULT_PAGE;
-				stat(path.c_str(), &st);
+				return false;
 			}
-			if ((st.st_mode & S_IXUSR) || (st.st_mode & S_IXGRP) || (st.st_mode & S_IXOTH))
+			std::cout << _method << std::endl;
+			std::cout << _uri << std::endl;
+			std::cout << _version << std::endl;
+
+			// 3. parse uri and get resource path
+			ParseUri();
+			
+			// 4. check resource path legal or not
+			if (!CheckPath())
 			{
-				cgi = true;
+				return false;
 			}
-			resource_size = st.st_size;
+
+			std::cout << _path << std::endl;
+			std::cout << _param << std::endl;
+
 			return true;
 		}
 
-		void HeaderParse()
+		bool HeaderParse()
 		{
-			std::string tmp_;
-			size_t start_ = 0, pos_ = 0;
-			while (start_ < header.size())
+			// Get header
+			std::string tmp;
+			while (tmp != "\n")
 			{
-				// 取出键值对
-				pos_ = header.find('\n', start_);
-				if (pos_ == std::string::npos)
+				tmp.clear();
+				if (ProtocolUtil::RecvOneLine(_sock, tmp) < 0)
 				{
-					break;
+					LOG(ERROR, "recv header error");
+					return false;
 				}
-				tmp_ = header.substr(start_, pos_ - start_);
-				start_ = pos_ + 1;
-
-				// 分割键值对存储为key-value方式
-				pos_ = tmp_.find(": ");
-				if (pos_ == std::string::npos)
+				if (tmp != "\n")
 				{
-					continue;
+					_header += tmp;
 				}
-				header_kv.insert(std::make_pair(tmp_.substr(0, pos_), tmp_.substr(pos_ + 2)));
 			}
-		}
-
-		bool IsTextExist()
-		{
-			if (strcasecmp(method.c_str(), "POST") == 0)
+			
+			// Parse header
+			size_t cur_pos = _header.find('\n');
+			size_t last_pos = 0;
+			size_t block_pos = 0;
+			while (cur_pos != std::string::npos)
 			{
-				return true;
+				block_pos = _header.find(": ", last_pos);
+				_header_kv.insert(make_pair(_header.substr(last_pos, block_pos - last_pos), _header.substr(block_pos + 2, cur_pos - block_pos - 2)));
+				last_pos = cur_pos + 1;
+				cur_pos = _header.find('\n', last_pos);
 			}
-			return false;
+			std::cout << "parse header success\n";
+			return true;
 		}
 
-		int GetContentLength()
+		void TextParse()
 		{
-			std::string tmp_ = header_kv["Content-Length"];
-			if (tmp_ == "")
+			// Check text exist or not
+			if (strcasecmp(_method.c_str(), "POST") != 0)
 			{
-				return 0;
+				return;
 			}
-			else
+			std::string content_length = _header_kv["Content-Length"];
+			if (content_length == "")
 			{
-				content_length = StringUtil::StringToInt(tmp_);
+				return;
 			}
-			return content_length;
-		}
-
-		void GetParam()
-		{
-			// 有没有可能url有一部分参数，正文还有参数？
-			param += text;
-		}
-
-		bool IsCgi()
-		{
-			return cgi;
+			_content_length = ProtocolUtil::StrToInt(content_length);
+			
+			// Get text
+			char ch = 0;
+			ssize_t recv_len = 0;
+			while (recv_len < _content_length)
+			{
+				if (recv(_sock, &ch, 1, 0) <= 0)
+				{
+					if (errno == EINTR)
+					{
+						continue;
+					}
+					return;
+				}
+				_text.push_back(ch);
+				recv_len++;
+			}
+			_param = _text;
 		}
 
 		int GetResourceSize()
 		{
-			return resource_size;
+			return _resource_size;
+		}
+
+		void SetResourceSize(int resource_size)
+		{
+			_resource_size = resource_size;
+		}
+
+		int GetCgi()
+		{
+			return _cgi;
 		}
 
 		std::string& GetPath()
 		{
-			return path;
-		}
-};
-
-class Response
-{
-	public:
-		std::string line;
-		std::string header;
-		std::string blank;
-		std::string text;
-	public:
-		int code;
-	public:
-		Response()
-			: blank("\n")
-			, code(OK)
-		{}
-
-		void MakeStatusLine()
-		{
-			line = HTTP_VERSION;
-			line += " ";
-			line += StringUtil::IntToString(code);
-			line += " ";
-			line += StringUtil::CodeToDescribe(code);
-			line += "\n";
+			return _path;
 		}
 
-		void MakeHeader(Request*& req_)
+		std::string GetParam()
 		{
-			header = "Content-Length: ";
-			header += StringUtil::IntToString(req_->GetResourceSize());
-			header += "\n";
-			header += "Content-Type: ";
-			header += StringUtil::GetContentType(req_->GetPath());
-			header += "\n";
+			return _param;
 		}
-};
 
-class ClientConnect
-{
-	private:
-		int sock;
-		int fd;
-	public:
-		ClientConnect(int client_sock_)
-			: sock(client_sock_)
-		{}
-
-		size_t RecvOneLine(std::string& str_)
+		void SetPath(std::string path)
 		{
-			ssize_t recv_len_ = 0;
-			char ch_ = 0;
-			// 分隔符可能有三种情况，均需要处理
-			// 1. \n	2. \r	3. \r\n
-			while (ch_ != '\n')
+			_path.clear();
+			_path = path;
+			CheckPath();
+		}
+
+		void RecvAllData()
+		{
+			ssize_t recv_len = 0;
+			char ch = 0;
+			while (ch != '\0')
 			{
-				recv_len_ = recv(sock, &ch_, 1, 0);
-				if (recv_len_ <= 0)
+				recv_len = recv(_sock, &ch, 1, 0);
+				if (recv_len <= 0)
 				{
-					if (errno == EINTR)
-						continue;
-					break;
-				}
-				else
-				{
-					if (ch_ == '\r')
+					if (recv_len == 0)
 					{
-						recv(sock, &ch_, 1, MSG_PEEK);
-						if (ch_ == '\n')
-						{
-							recv(sock, &ch_, 1, 0);
-						}
-						else
-						{
-							ch_ = '\n';
-						}
+						return;
 					}
-					str_.push_back(ch_);
-				}
-			}
-			return str_.size();
-		}
-
-		void GetHeader(std::string& header_)
-		{
-			// 获取header
-			std::string tmp_;
-			while (tmp_ != "\n")
-			{
-				tmp_.clear();
-				RecvOneLine(tmp_);
-				if (tmp_ != "\n")
-				{
-					header_ += tmp_;
-				}
-			}
-			// 读取协议头最后一行情况
-			// key: value\r\n
-			// \r\n\r\n
-			// 空行有两个\r\n，只读取了一个，所以要把另一个也读了
-			//RecvOneLine(tmp_);
-		}
-
-		void RecvText(std::string& text_, int content_lenth_)
-		{
-			char ch_ = 0;
-			int recv_length_ = 0;
-			int ret_ = 0;
-			while (recv_length_ < content_length_)
-			{
-				ret_ = recv(sock, &ch_, 1, 0);
-				if (ret_ <= 0)
-				{
-					if (errno == EINTR)
+					else if (recv_len < 0 && errno == EINTR)
 					{
 						continue;
 					}
 					else
 					{
-						return;
+						LOG(ERROR, "recv reuqest error");
+						break;
 					}
 				}
-				text_ += ch_;
-				recv_length_++;
+			}
+		}
+	private:
+		bool GetLine()
+		{
+			// Get line and divide
+			if (ProtocolUtil::RecvOneLine(_sock, _line) < 0)
+			{
+				LOG(ERROR, "Recv line error");
+				return false;
+			}
+			std::stringstream ss(_line);
+			ss >> _method >> _uri >> _version;
+			return true;
+		}
+
+		bool CheckMethod()
+		{
+			// Check method
+			for (size_t i = 0; i < _method.size(); i++)
+			{
+				if (_method[i] >= 'a')
+					_method[i] -= 'a' - 'A';
+			}
+			if (!ProtocolUtil::MethodCheck(_method))
+			{
+				return false;
+			}
+
+			// Confirm cgi model
+			if (_method == "POST")
+			{
+				_cgi = true;
+			}
+			return true;
+		}
+
+		void ParseUri()
+		{
+			// Uri parse --- Get path
+			size_t pos = _uri.rfind('?');
+			// If uri include character '?', cgi = true and
+			// divide uri into two part --- path and parameter
+			if (pos != std::string::npos)
+			{
+				// Uri has param, cgi-->true
+				_cgi = true;
+				_path += _uri.substr(0, pos);
+				std::cout << _path << std::endl;
+				_param = _uri.substr(pos + 1);
+				if (_path[_path.size() - 1] == '/')
+				{
+					_path += DEFAULT_PAGE;
+				}
+				std::cout << _param << std::endl;
+			}
+			else
+			{
+				_path += _uri;
 			}
 		}
 
-		void SendResponse(Request*& req_, Response*& rsp_)
+		bool CheckPath()
 		{
-			send(sock, rsp_->line.c_str(), rsp_->line.size(), 0);
-			send(sock, rsp_->header.c_str(), rsp_->header.size(), 0);
-			send(sock, rsp_->blank.c_str(), rsp_->blank.size(), 0);
-			fd = open(req_->GetPath().c_str(), O_RDONLY);
-			sendfile(sock, fd, nullptr, req_->GetResourceSize());
+			std::cout << _path << std::endl;
+			// Check resource path legal and get resource size
+			struct stat st;
+			if (stat(_path.c_str(), &st) < 0)
+			{
+				return false;
+			}
+			if (S_ISDIR(st.st_mode))
+			{
+				_path += '/';
+				_path += DEFAULT_PAGE;
+				stat(_path.c_str(), &st);
+			}
+			if ((S_IRUSR & st.st_mode) || (S_IRGRP & st.st_mode) || (S_IROTH & st.st_mode))
+			{
+				_resource_size = st.st_size;
+			}
+			else
+			{
+				return false;
+			}
+			return true;
+		}
+};
+
+class Response
+{
+	private:
+		int _sock;
+
+		int _code;
+		std::string _line;
+		std::string _header;
+		std::string _blank;
+		std::string _text;
+	public:
+		Response(int client_sock)
+			: _sock(client_sock)
+			, _code(OK)
+			, _blank("\n")
+		{}
+
+		void SetCode(int statu)
+		{
+			_code = statu;
 		}
 
-		~ClientConnect()
+		int GetStatus()
 		{
-			if (sock > 0)
+			return _code;
+		}
+
+		void MakeStatusLine()
+		{
+			_line += VERSION;
+			_line += " ";
+			_line += ProtocolUtil::IntToStr(_code);
+			_line += " ";
+			_line += ProtocolUtil::CodeToDesc(_code);
+			_line += "\n";
+		}
+
+		void MakeHeader(Request*& req)
+		{
+			_header += "Content-Length: ";
+			_header += ProtocolUtil::IntToStr(req->GetResourceSize());
+			_header += "\n";
+			_header += "Content-Type: ";
+			std::string content_type = ProtocolUtil::GetContentType(req->GetPath());
+			if (content_type == "")
 			{
-				close(sock);
+				_header += "text/html";
 			}
-			if (fd > 0)
+			else
 			{
-				close(fd);
+				_header += content_type;
+			}
+			_header += "\n";
+		}
+
+		void SendResponse(Request*& req)
+		{
+			send(_sock, _line.c_str(), _line.size(), 0);
+			send(_sock, _header.c_str(), _header.size(), 0);
+			send(_sock, "\n", 1, 0);
+			if (req->GetCgi())
+			{
+				send(_sock, _text.c_str(), _text.size(), 0);
+			}
+			else
+			{
+				int fd = open(req->GetPath().c_str(), O_RDONLY);
+				sendfile(_sock, fd, NULL, req->GetResourceSize());
+			}
+		}
+
+		std::string& GetText()
+		{
+			return _text;
+		}
+
+		~Response()
+		{
+			if (_sock > 0)
+			{
+				close(_sock);
 			}
 		}
 };
@@ -384,79 +486,128 @@ class ClientConnect
 class ConnectHandler
 {
 	public:
-		// 处理连接请求
-		static void* HandleConnect(void* sock_)
+		static void* HandleConnect(void* sock)
 		{
-			int client_sock_ = *((int*)sock_);
-			ClientConnect* client_ = new ClientConnect(client_sock_);
-			Request* req_ = new Request;
-			Response* rsp_ = new Response;
-
-			// 读取首行并解析
-			client_->RecvOneLine(req_->line);
-			req_->RequestLineParse();
-
-			// 请求方法是否合法
-			if (!req_->IsMethodLegal())
+			int client_sock = *(int*)sock;
+			Request* req = new Request(client_sock);
+			Response* resp = new Response(client_sock);
+			
+			// Handle request
+			if (!req->LineParse())
 			{
-				// 请求方法错误
-				rsp_->code = NOT_FOUND;
+				LOG(WARNING, "line parse failed");
+				resp->SetCode(NOT_FOUND);
 				goto end;
 			}
 
-			// uri合法，开始解析
-			req_->UriParse();
-
-			// 路径是否合法
-			if (!req_->IsPathLegal())
+			if (!req->HeaderParse())
 			{
-				LOG(ERROR, "path not exist");
-				rsp_->code = NOT_FOUND;
+				LOG(WARNING, "header parse failed");
+				resp->SetCode(NOT_FOUND);
 				goto end;
 			}
 
-			// 首行分析完毕，获取协议头，分割键值对
-			client_->GetHeader(req_->header);
-			req_->HeaderParse();
+			req->TextParse();
 
-			// 分析是否需要读取正文
-			if (req_->IsTextExist())
-			{
-				client_->RecvText(req_->text, req_->GetContentLength());
-				req_->GetParam();
-			}
-
-			ProcessResponse(client_, req_, rsp_);
+			// start response
+			LOG(INFO, "request parse success, start to response");
+			ProcessResponse(req, resp);
 end:
-			if (rsp_->code != OK)
+			if (resp->GetStatus() != OK)
 			{
-
+				// Send page 404 not found
+				// req->RecvAllData();
+				//req->HeaderParse();
+				//req->TextParse();
+				shutdown(client_sock, SHUT_RD);
+				req->SetPath(PAGE_NOT_FOUND);
+				ProcessResponse(req, resp);
 			}
-			delete client_;
-			delete req_;
-			delete rsp_;
-			delete (int*)sock_;
+			delete (int*)sock;
+			delete req;
+			delete resp;
 		}
-
-		static void ProcessResponse(ClientConnect*& client_, Request*& req_, Response*& rsp_)
+	private:
+		static void ProcessResponse(Request*& req, Response*& resp)
 		{
-			// 判定cgi方法
-			if (req_->IsCgi())
+			if (req->GetCgi())
 			{
-				//ProcessCgi(client_, req_, rsp_);
+				std::cout << "cgi" << std::endl;
+				ProcessCgi(req, resp);
 			}
 			else
 			{
-				ProcessNonCgi(client_, req_, rsp_);
+				std::cout << "noncgi" << std::endl;
+				ProcessNonCgi(req, resp);
 			}
 		}
 
-		static int ProcessNonCgi(ClientConnect*& client_, Request*& req_, Response*& rsp_)
+		static void ProcessCgi(Request*& req, Response*& resp)
 		{
-			rsp_->MakeStatusLine();
-			rsp_->MakeHeader(req_);
-			// 不需要先将text读取出来，可以直接用sendfile发送
-			client_->SendResponse(req_, rsp_);
+			// Create pipe for communicate
+			int input[2], output[2];
+			pipe(input);
+			pipe(output);
+			std::string param = req->GetParam();
+
+			// Create child process to deal parameter
+			int pid = fork();
+			if (pid < 0)
+			{
+				resp->SetCode(NOT_FOUND);
+				return;
+			}
+			else if (pid == 0)
+			{
+				close(input[1]);
+				close(output[0]);
+				dup2(input[0], 0);
+				dup2(output[1], 1);
+
+				// Set data size so child process can know the data size
+				std::string env = "Content-Length=";
+				env += ProtocolUtil::IntToStr(param.size());
+				putenv((char*)env.c_str());
+
+				const std::string& path = req->GetPath();
+				std::cout << "path: "<< path << std::endl;
+				execl(path.c_str(), path.c_str(), NULL);
+				exit(1);
+			}
+			else
+			{
+				close(input[0]);
+				close(output[1]);
+
+				ssize_t send_len = 0;
+				ssize_t send_cur = 0;
+				ssize_t send_total = param.size();
+				while (send_cur < send_total && (send_len = write(input[1], param.c_str() + send_cur, send_total - send_cur)) > 0)
+				{
+					send_cur += send_len;
+				}
+
+				std::string& text = resp->GetText();
+				char ch;
+				while (read(output[0], &ch, 1) > 0)
+				{
+					text.push_back(ch);
+				}
+				waitpid(pid, NULL, 0);
+
+				std::cout << "text->" << text << std::endl;
+				req->SetResourceSize(text.size());
+				resp->MakeStatusLine();
+				resp->MakeHeader(req);
+				resp->SendResponse(req);
+			}
+		}
+
+		static void ProcessNonCgi(Request*& req, Response*& resp)
+		{
+			resp->MakeStatusLine();
+			resp->MakeHeader(req);
+			resp->SendResponse(req);
 		}
 };
 

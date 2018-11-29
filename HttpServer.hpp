@@ -6,38 +6,39 @@
 class HttpServer
 {
 	private:
-		int listen_sock;
-		int port;
+		int _listen_sock;
+		int _port;
 	public:
 		HttpServer()
-			: listen_sock(0)
-			, port(0)
+			: _listen_sock(0)
+			, _port(0)
 		{}
 
 		void InitServer(int port)
 		{
-			listen_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-			if (listen_sock < 0)
+			_listen_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+			if (_listen_sock < 0)
 			{
 				LOG(ERROR, "create socket error!");
 				exit(1);
 			}
 
-			int opt_ = 0;
-			setsockopt(listen_sock, SOL_SOCKET, SO_REUSEADDR, &opt_, sizeof(opt_));
+			size_t opt = 1;
+			setsockopt(_listen_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
-			struct sockaddr_in listen_addr_;
-			listen_addr_.sin_family = AF_INET;
-			listen_addr_.sin_port = htons(port);
-			listen_addr_.sin_addr.s_addr = INADDR_ANY;
+			struct sockaddr_in listen_addr;
+			listen_addr.sin_family = AF_INET;
+			listen_addr.sin_port = htons(port);
+			listen_addr.sin_addr.s_addr = INADDR_ANY;
 
-			if (bind(listen_sock, (struct sockaddr*)&listen_addr_, sizeof(listen_addr_)) < 0)
+			if (bind(_listen_sock, (struct sockaddr*)&listen_addr, sizeof(listen_addr)) < 0)
 			{
-				LOG(ERROR, "bind error!");
+				printf("%s\n", strerror(errno));
+				LOG(ERROR, "bind error:%s!");
 				exit(2);
 			}
 
-			if (listen(listen_sock, 5) < 0)
+			if (listen(_listen_sock, 5) < 0)
 			{
 				LOG(ERROR, "listen error!");
 				exit(3);
@@ -50,35 +51,35 @@ class HttpServer
 			LOG(INFO, "start to accept link...");
 			while (1)
 			{
-				int client_sock_ = 0;
-				struct sockaddr_in peer_;
-				socklen_t len_ = sizeof(peer_);
-				client_sock_ = accept(listen_sock, (struct sockaddr*)&peer_, &len_);
-				if (client_sock_ < 0)
+				int client_sock = 0;
+				struct sockaddr_in peer;
+				socklen_t len = sizeof(peer);
+				client_sock = accept(_listen_sock, (struct sockaddr*)&peer, &len);
+				if (client_sock < 0)
 				{
 					LOG(WARNING, "accept link failed");
 					continue;
 				}
 
 				LOG(INFO, "accept new link from far-end, create thread handle link...");
-				//SetNonblock(client_sock_);
-				int* new_sock_ = new int(client_sock_);
-				pthread_t tid_ = 0;
-				pthread_create(&tid_, NULL, ConnectHandler::HandleConnect, (void*)new_sock_);
+				// SetNonblock(client_sock);
+				int* new_sock = new int(client_sock);
+				pthread_t tid = 0;
+				pthread_create(&tid, NULL, ConnectHandler::HandleConnect, (void*)new_sock);
 			}
 		}
 
-		void SetNonblock(int sock_)
+		void SetNonblock(int sock)
 		{
-			int flag_ = fcntl(sock_, F_GETFL, 0);
-			fcntl(sock_, F_SETFL, flag_ | O_NONBLOCK);
+			int flag = fcntl(sock, F_GETFL, 0);
+			fcntl(sock, F_SETFL, flag | O_NONBLOCK);
 		}
 
 		~HttpServer()
 		{
-			if (listen_sock >= 0)
+			if (_listen_sock >= 0)
 			{
-				close(listen_sock);
+				close(_listen_sock);
 			}
 		}
 };
