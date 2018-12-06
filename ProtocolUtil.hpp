@@ -415,9 +415,9 @@ class Response
 			, _blank("\n")
 		{}
 
-		void SetCode(int statu)
+		void SetCode(int status)
 		{
-			_code = statu;
+			_code = status;
 		}
 
 		int GetStatus()
@@ -517,11 +517,18 @@ end:
 			{
 				// Send page 404 not found
 				// req->RecvAllData();
-				//req->HeaderParse();
-				//req->TextParse();
-				shutdown(client_sock, SHUT_RD);
+				req->HeaderParse();
+				req->TextParse();
+				//shutdown(client_sock, SHUT_RD);
+				/*
+				send(client_sock, "HTTP/1.1 302 FOUND\r\n", strlen("HTTP/1.1 302 FOUND\r\n"), 0);
+				send(client_sock, "Content-Length: 0\r\n", strlen("Content-Length: 0\r\n"), 0);
+				send(client_sock, "Location: http://192.168.44.134:8080/404/index.html\r\n\r\n", strlen("Location: http://192.168.44.134:8080/404/index.html\r\n\r\n"), 0);
+				*/
 				req->SetPath(PAGE_NOT_FOUND);
+
 				ProcessResponse(req, resp);
+				shutdown(client_sock, SHUT_RDWR);
 			}
 			delete (int*)sock;
 			delete req;
