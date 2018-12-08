@@ -23,17 +23,19 @@
 
 #define DEFAULT_PAGE	"index.html"
 #define ROOT			"wwwroot"
-#define PAGE_NOT_FOUND	"wwwroot/404/index.html"
 
-#define OK			200
-#define NOT_FOUND	404
+#define OK				200
+#define BAD_REQUEST		400
+#define NOT_FOUND		404
+#define SERVER_ERROR	500
 
 class ProtocolUtil
 {
-	public:
+	private:
 		static std::unordered_map<std::string, bool> _method;
 		static std::unordered_map<std::string, std::string> _content_type;
-
+		static std::unordered_map<int, std::string> _default_page;
+	public:
 		static bool MethodCheck(std::string& method)
 		{
 			return _method[method];
@@ -106,11 +108,22 @@ class ProtocolUtil
 			{
 				case 200:
 					return "OK";
+				case 302:
+					return "FOUND";
+				case 400:
+					return "BAD REQUEST";
 				case 404:
 					return "NOT FOUND";
+				case 500:
+					return "SERVER ERROR";
 				default:
 					return "NOT FOUND";
 			}
+		}
+
+		static std::string& GetDefaultPage(int code)
+		{
+			return _default_page[code];
 		}
 };
 
@@ -126,6 +139,13 @@ std::unordered_map<std::string, std::string> ProtocolUtil::_content_type = {
 	{".css", "text/css"},
 	{".jpg", "application/x-jpg"},
 	{".jpeg", "image/jpeg"}
+};
+
+std::unordered_map<int, std::string> ProtocolUtil::_default_page = {
+	{300, ""},
+	{400, ""},
+	{404, "wwwroot/404/index.html"},
+	{500, ""}
 };
 
 class Request
@@ -154,24 +174,20 @@ class Request
 			, _cgi(false)
 		{}
 
-		bool LineParse()
+		int LineParse()
 		{
 			// 1. get line and divide line
 			if (!GetLine())
 			{
-				return false;
+				return BAD_REQUEST;
 			}
-			std::cout << _line << std::endl;
 
 			// 2. check method is legal or not
 			//	  if method is "POST" ---> cgi = true
 			if (!CheckMethod())
 			{
-				return false;
+				return BAD_REQUEST;
 			}
-			std::cout << _method << std::endl;
-			std::cout << _uri << std::endl;
-			std::cout << _version << std::endl;
 
 			// 3. parse uri and get resource path
 			ParseUri();
@@ -179,16 +195,13 @@ class Request
 			// 4. check resource path legal or not
 			if (!CheckPath())
 			{
-				return false;
+				return NOT_FOUND;
 			}
 
-			std::cout << _path << std::endl;
-			std::cout << _param << std::endl;
-
-			return true;
+			return OK;
 		}
 
-		bool HeaderParse()
+		int HeaderParse()
 		{
 			// Get header
 			std::string tmp;
@@ -198,7 +211,7 @@ class Request
 				if (ProtocolUtil::RecvOneLine(_sock, tmp) < 0)
 				{
 					LOG(ERROR, "recv header error");
-					return false;
+					return SERVER_ERROR;
 				}
 				if (tmp != "\n")
 				{
@@ -217,8 +230,7 @@ class Request
 				last_pos = cur_pos + 1;
 				cur_pos = _header.find('\n', last_pos);
 			}
-			std::cout << "parse header success\n";
-			return true;
+			return OK;
 		}
 
 		void TextParse()
@@ -279,10 +291,10 @@ class Request
 			return _param;
 		}
 
-		void SetPath(std::string path)
+		void SetPath(int code)
 		{
 			_path.clear();
-			_path = path;
+			_path = ProtocolUtil::GetDefaultPage(code);
 			CheckPath();
 		}
 
@@ -357,13 +369,11 @@ class Request
 				// Uri has param, cgi-->true
 				_cgi = true;
 				_path += _uri.substr(0, pos);
-				std::cout << _path << std::endl;
 				_param = _uri.substr(pos + 1);
 				if (_path[_path.size() - 1] == '/')
 				{
 					_path += DEFAULT_PAGE;
 				}
-				std::cout << _param << std::endl;
 			}
 			else
 			{
@@ -373,7 +383,6 @@ class Request
 
 		bool CheckPath()
 		{
-			std::cout << _path << std::endl;
 			// Check resource path legal and get resource size
 			struct stat st;
 			if (stat(_path.c_str(), &st) < 0)
@@ -486,24 +495,24 @@ class Response
 class ConnectHandler
 {
 	public:
-		static void* HandleConnect(void* sock)
+		static void* HandleConnect(int sock)
 		{
-			int client_sock = *(int*)sock;
-			Request* req = new Request(client_sock);
-			Response* resp = new Response(client_sock);
+			Request* req = new Request(sock);
+			Response* resp = new Response(sock);
+			int code = OK;
 			
 			// Handle request
-			if (!req->LineParse())
+			if ((code = req->LineParse()) != OK)
 			{
 				LOG(WARNING, "line parse failed");
-				resp->SetCode(NOT_FOUND);
+				resp->SetCode(code);
 				goto end;
 			}
 
-			if (!req->HeaderParse())
+			if ((code = req->HeaderParse()) != OK)
 			{
 				LOG(WARNING, "header parse failed");
-				resp->SetCode(NOT_FOUND);
+				resp->SetCode(code);
 				goto end;
 			}
 
@@ -517,20 +526,19 @@ end:
 			{
 				// Send page 404 not found
 				// req->RecvAllData();
-				req->HeaderParse();
-				req->TextParse();
+				//req->HeaderParse();
+				//req->TextParse();
 				//shutdown(client_sock, SHUT_RD);
 				/*
 				send(client_sock, "HTTP/1.1 302 FOUND\r\n", strlen("HTTP/1.1 302 FOUND\r\n"), 0);
 				send(client_sock, "Content-Length: 0\r\n", strlen("Content-Length: 0\r\n"), 0);
 				send(client_sock, "Location: http://192.168.44.134:8080/404/index.html\r\n\r\n", strlen("Location: http://192.168.44.134:8080/404/index.html\r\n\r\n"), 0);
 				*/
-				req->SetPath(PAGE_NOT_FOUND);
+				req->SetPath(code);
 
 				ProcessResponse(req, resp);
-				shutdown(client_sock, SHUT_RDWR);
+				shutdown(sock, SHUT_RDWR);
 			}
-			delete (int*)sock;
 			delete req;
 			delete resp;
 		}
@@ -539,12 +547,10 @@ end:
 		{
 			if (req->GetCgi())
 			{
-				std::cout << "cgi" << std::endl;
 				ProcessCgi(req, resp);
 			}
 			else
 			{
-				std::cout << "noncgi" << std::endl;
 				ProcessNonCgi(req, resp);
 			}
 		}
@@ -577,7 +583,6 @@ end:
 				putenv((char*)env.c_str());
 
 				const std::string& path = req->GetPath();
-				std::cout << "path: "<< path << std::endl;
 				execl(path.c_str(), path.c_str(), NULL);
 				exit(1);
 			}
@@ -602,7 +607,6 @@ end:
 				}
 				waitpid(pid, NULL, 0);
 
-				std::cout << "text->" << text << std::endl;
 				req->SetResourceSize(text.size());
 				resp->MakeStatusLine();
 				resp->MakeHeader(req);

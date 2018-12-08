@@ -2,6 +2,7 @@
 #define __Http_SERVER_HPP__
 
 #include "ProtocolUtil.hpp"
+#include "ThreadPool.hpp"
 
 class HttpServer
 {
@@ -16,6 +17,8 @@ class HttpServer
 
 		void InitServer(int port)
 		{
+			signal(SIGPIPE, SIG_IGN);
+
 			_listen_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 			if (_listen_sock < 0)
 			{
@@ -49,6 +52,7 @@ class HttpServer
 		void Start()
 		{
 			LOG(INFO, "start to accept link...");
+			ThreadPool tp;
 			while (1)
 			{
 				int client_sock = 0;
@@ -63,9 +67,11 @@ class HttpServer
 
 				LOG(INFO, "accept new link from far-end, create thread handle link...");
 				// SetNonblock(client_sock);
-				int* new_sock = new int(client_sock);
-				pthread_t tid = 0;
-				pthread_create(&tid, NULL, ConnectHandler::HandleConnect, (void*)new_sock);
+				Task t(client_sock, ConnectHandler::HandleConnect);
+				tp.PushTask(t);
+				//int* new_sock = new int(client_sock);
+				//pthread_t tid = 0;
+				//pthread_create(&tid, NULL, ConnectHandler::HandleConnect, (void*)new_sock);
 			}
 		}
 
