@@ -36,8 +36,8 @@ class HttpServer
 
 			if (bind(_listen_sock, (struct sockaddr*)&listen_addr, sizeof(listen_addr)) < 0)
 			{
+				LOG(ERROR, "bind error!");
 				printf("%s\n", strerror(errno));
-				LOG(ERROR, "bind error:%s!");
 				exit(2);
 			}
 
@@ -65,7 +65,7 @@ class HttpServer
 					continue;
 				}
 
-				LOG(INFO, "accept new link from far-end, create thread handle link...");
+				LOG(INFO, "accept new link from far-end, start handle link");
 				// SetNonblock(client_sock);
 				Task t(client_sock, ConnectHandler::HandleConnect);
 				tp.PushTask(t);

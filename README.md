@@ -10,6 +10,7 @@
 ## 使用系统及开发工具
 使用系统：
 - CentOS 7
+
 使用开发工具：
 - vim
 - g++
@@ -25,7 +26,7 @@
 ## 使用说明
 1. 运行脚本文件
 ```shell
-$ ./build.sh
+$ ./install.sh
 ```
 2. 找到生成的httpserver/
 ```shell

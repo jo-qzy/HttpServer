@@ -11,9 +11,19 @@ int main(int argc, char* argv[])
 	{
 		Usage(argv[0]);
 	}
+    int fd = -1;
+    if ((fd = open("./log", O_WRONLY | O_CREAT)) < 0)
+    {
+        LOG(ERROR, "open error");
+    }
+    dup2(1, fd);
+    if (daemon(1, 1) < 0)
+    {
+        LOG(ERROR, "daemon failed");
+    }
 	HttpServer* server_ = new HttpServer;
 	server_->InitServer(atoi(argv[1]));
-	server_->Start();
+    server_->Start();
 
 	delete server_;
 	return 0;

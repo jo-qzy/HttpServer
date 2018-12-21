@@ -19,13 +19,10 @@ class Task
 			, _handler(handler)
 		{}
 
-		void Run()
-		{
-			_handler(_sock);
-		}
-
-		void operator()(int sock)
-		{}
+		void operator()()
+        {
+            _handler(_sock);
+        }
 };
 
 class ThreadPool
@@ -96,7 +93,7 @@ class ThreadPool
 				}
 				Task t = tp->GetTask();
 				tp->UnlockQueue();
-				t.Run();
+				t();
 			}
 		}
 	public:
